@@ -1,206 +1,211 @@
 # Self-Healing Multi-Agent Expense Approval System
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Temporal Python SDK](https://img.shields.io/badge/temporal-python%20sdk-000000)](https://docs.temporal.io/dev-guide/python)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+**Durable AI workflows with self-correcting LLM outputs, human-in-the-loop approvals, and advanced Temporal recovery patterns.**
 
-A working demo of **self-healing AI agents** and **interrupt-and-resume human-in-the-loop
-workflows**, built on [Temporal](https://temporal.io) and a local [Ollama](https://ollama.com) model —
-plus three advanced Temporal patterns (replay-safe schema versioning, heartbeat-checkpointed
-streaming resume, and bounded event history via continue-as-new) layered on top of the same system.
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
+[![Temporal Python SDK](https://img.shields.io/badge/Temporal-Python%20SDK-000000)](https://docs.temporal.io/develop/python)
+[![MIT License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-No cloud LLM, no hosted queue — everything runs on your machine.
+This project demonstrates a multi-step expense-approval flow using the [Temporal Python SDK](https://docs.temporal.io/develop/python), a locally hosted [Ollama](https://ollama.com/) language model, and an optional FastAPI web interface. It focuses on **recoverable execution and explicit failure handling**, not just chaining together LLM calls.
 
-## Table of contents
+The core workflow demonstrates three types of behaviour:
 
-- [Why this exists](#why-this-exists)
-- [Architecture](#architecture)
-- [The three core mechanisms](#the-three-core-mechanisms)
-- [The three advanced Temporal patterns](#the-three-advanced-temporal-patterns)
-- [Prerequisites](#prerequisites)
-- [Setup](#setup)
-- [Configuration](#configuration)
-- [Run the tests](#run-the-tests)
-- [Run it for real](#run-it-for-real)
-- [Web UI](#web-ui)
-- [Known limitation](#known-limitation)
-- [License](#license)
+- **Self-correction:** Validate structured model output and feed the model its previous response and the specific validation error before trying again.
+- **Human intervention:** Use a validated Temporal **Update** to confirm an unreadable amount and a Temporal **Signal** for manager approval or rejection.
+- **Durability patterns:** Replay-safe prompt versioning, activity heartbeat checkpoints for prompted continuation, and `continue_as_new` to limit workflow event history.
 
-## Why this exists
-
-Most "AI agent" demos retry blindly on failure and treat a human approval step as an afterthought.
-This project is built the other way around: the workflow **validates its own model output** and
-retries with the actual failure fed back as conversation context (not a generic error string), and
-the two human-in-the-loop mechanisms — Temporal Signal and Temporal Update — are deliberately both
-demonstrated, since they solve different problems (fire-and-forget vs. synchronous-and-validated).
-
-Everything here is grounded in what actually happened running it live against a real model, not just
-design intent — see [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md) for the real bugs found and fixed
-along the way.
+> This is a local technical demonstration, not a production expenses, financial compliance, or fraud-detection service. Risk classifications are model-generated; they are not independently validated fraud scores.
 
 ## Architecture
 
-```
+```text
 ExpenseOrchestratorWorkflow
-  ├── ExtractionWorkflow   (child)  — self-healing, Update-based human escalation
-  ├── PolicyWorkflow       (child)  — self-healing, no human escalation of its own
-  └── ApprovalWorkflow     (child)  — Signal-based human escalation, no self-healing
+   |
+   +-- ExtractionWorkflow (child)
+   |      Ollama extraction -> JSON validation -> corrective retries
+   |      exhausted? -> wait for employee Update: confirm_amount()
+   |
+   +-- PolicyWorkflow (child)
+   |      deterministic policy check + Ollama risk classification
+   |      invalid output? -> corrective retries -> fail safe to high risk
+   |
+   +-- ApprovalWorkflow (child, when required)
+          wait for manager Signal: manager_decision()
+
+CLI or FastAPI web UI -> Temporal client -> workflow & activity workers
+                                        |
+                                  Ollama chat API
 ```
 
-The orchestrator runs these three child workflows in sequence, each a fully independent Temporal
-workflow execution with its own durable history, queryable and inspectable on its own. It auto-approves
-only if `policy.policy_pass and policy.risk == "low"`; otherwise it starts `ApprovalWorkflow` and waits
-— for five seconds or five days, at no cost while idle.
+An expense is auto-approved only when the deterministic policy check passes **and** the risk classification is `low`; all other outcomes proceed to a manager decision.
+
+### Important source files
+
+| File | Purpose |
+| --- | --- |
+| [`expense_agent/workflows.py`](expense_agent/workflows.py) | Orchestrator and three child workflows, updates, signals, queries, retries and continuation |
+| [`expense_agent/activities.py`](expense_agent/activities.py) | Receipt extraction, risk classification, parsing, corrective prompts, heartbeat checkpoints and snapshots |
+| [`expense_agent/ollama_client.py`](expense_agent/ollama_client.py) | Local Ollama HTTP chat and streaming interface |
+| [`expense_agent/worker.py`](expense_agent/worker.py) | Temporal worker registration |
+| [`expense_agent/cli.py`](expense_agent/cli.py) | Submit, query, approve, reject and confirm amount |
+| [`expense_agent/web.py`](expense_agent/web.py) | FastAPI endpoints, Server-Sent Events and UI streaming buffers |
+| [`expense_agent/static/index.html`](expense_agent/static/index.html) | Browser interface |
+| [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md) | Implementation notes, observed failures, fixes and behaviour explanations |
+| [`tests/`](tests/) | Activity, workflow, API, CLI and Ollama-client tests |
 
 ## The three core mechanisms
 
-**Self-healing.** A retry here is not a blind retry. The workflow validates the model's output, then
-sends the bad response *and* the specific validation error back as real conversation turns, so the
-next attempt can see exactly what it got wrong. Bounded at three attempts — no infinite loops.
+### 1. Structured self-correction
 
-**Update — a correction that answers back.** When extraction runs out of attempts, the employee
-supplies the real amount through a Temporal *Update* — a synchronous, validated call. A bad value is
-rejected with the reason on the spot; a good one returns `accepted` and the workflow carries on where
-it stopped.
+The extraction and risk-classification activities request JSON responses from Ollama and validate the result. If output is invalid, the workflow adds **both the failed output and the error** to the next conversation turn. Each correction loop is limited to three attempts, distinct from Temporal's activity-level retries for transient failures.
 
-**Signal — a human gate that costs nothing to wait on.** Anything over policy — or classified as
-anything but low risk — parks on a Temporal *Signal* and waits. The manager's approve or reject is
-fire-and-forget, and the workflow's state is durable the whole time it waits.
+This demonstrates a deliberate separation between a **model-output failure** (correctable with context) and an **infrastructure/activity failure** (handled by Temporal retry policies).
 
-## The three advanced Temporal patterns
+### 2. Temporal Update: employee confirmation
 
-**Replay-safe schema versioning (`workflow.patched`).** The extraction prompt has two versions
-(pre- and post-nullable-fields), gated by `workflow.patched("extraction-prompt-v2")`, called once at
-the top of the workflow. A claim already in flight when the prompt changes keeps replaying against the
-prompt it actually ran; every new claim gets the current one — same code, same deploy, no
-non-deterministic replay error.
+If extraction cannot produce a valid positive amount after three attempts, `ExtractionWorkflow` waits in `pending_amount_confirmation`. The `confirm_amount()` **Update** validates that the workflow is in the correct state and that the supplied amount is positive, then returns `accepted` for a valid correction.
 
-**Heartbeat-checkpointed streaming with resume.** `classify_fraud_risk` heartbeats its accumulated
-generated text roughly once a second. If the worker crashes mid-generation, Temporal's retry reads the
-last heartbeat and prompts the model to continue from there rather than restarting — a *prompted*
-continuation, not a true token-level resume.
+### 3. Temporal Signal: manager decision
 
-**Bounded event history via continue-as-new.** The orchestrator checks its own history length after
-extraction completes; past a configurable demo-scale threshold (`HISTORY_LENGTH_THRESHOLD`, default
-`20` — deliberately low, since real claims never approach Temporal's actual ~10,000-event limit), it
-writes a snapshot of its progress to `context_store.jsonl` (a stand-in for a real external store like
-Redis or a vector DB) and restarts its own execution history via `continue_as_new`, resuming exactly
-where it left off — same workflow ID throughout, transparent to any external caller.
+When policy or risk requires human review, `ApprovalWorkflow` waits for a `manager_decision()` **Signal**. The decision can approve or reject the claim with an optional note. The workflow can remain pending without keeping a Python worker thread occupied.
 
-> A single simple claim's history at the check point is typically well under the default threshold —
-> set `HISTORY_LENGTH_THRESHOLD=10` (e.g. in `.env`) to actually observe continue-as-new firing in a
-> demo run.
+## Advanced Temporal patterns
 
-## Prerequisites
+### Replay-safe prompt versioning
 
-- Python 3.10+
-- [Ollama](https://ollama.com) running locally with a model pulled — check what you already have with
-  `ollama list`, or pull one: `ollama pull llama3.2`
-- Temporal dev server: `temporal server start-dev`
+`ExtractionWorkflow` uses `workflow.patched("extraction-prompt-v2")` to select between two extraction prompts. This is a workflow-code versioning example designed to preserve replay compatibility for histories created before a prompt change. The patch guards the **prompt-selection decision**; it does not constitute an arbitrary database-schema migration system.
+
+### Heartbeat-checkpointed prompted continuation
+
+During streamed risk classification, the activity periodically heartbeats the accumulated output. On a retry after interruption, the activity can read heartbeat details, supply the partial output to Ollama and request continuation.
+
+This is a **best-effort prompted continuation**, not a true token-by-token restoration of the model's internal generation state. The combined response is still validated before the workflow accepts it.
+
+### Bounded workflow history with `continue_as_new`
+
+After the extraction stage, the orchestrator checks the current event-history length. At or above `HISTORY_LENGTH_THRESHOLD`, it writes a JSONL context snapshot and calls `workflow.continue_as_new()` with explicit resume data. The new execution resumes after completed extraction rather than repeating that step.
+
+`context_store.jsonl` is an illustrative external snapshot sink. **The continuation state is passed through workflow arguments; it is not reconstructed by loading that JSONL file.** The small demo threshold is deliberately not a production sizing recommendation.
+
+## Requirements
+
+- Python **3.10+** and pip
+- [Ollama](https://ollama.com/) installed and running on your computer
+- An Ollama chat model, e.g. `llama3.2`
+- [Temporal CLI](https://docs.temporal.io/cli), used to start the local development server
+
+No cloud LLM or hosted Temporal service is required for the standard local demo.
 
 ## Setup
 
 ```bash
-git clone https://github.com/kishorevrk0201/temporal-agentic-patterns.git
+git clone https://github.com/Theo-Daniel/temporal-agentic-patterns.git
 cd temporal-agentic-patterns
-pip install -r requirements.txt
-cp .env.example .env   # optional — defaults work for a standard localhost setup
+
+python -m venv .venv
+source .venv/bin/activate       # macOS / Linux
+# On Windows PowerShell: .venv\Scripts\Activate.ps1
+
+python -m pip install -r requirements.txt
+cp .env.example .env            # optional; review settings below
+ollama pull llama3.2
 ```
 
-If the default model in `.env` (`llama3.2`) isn't one you have pulled, set `OLLAMA_MODEL` to whatever
-`ollama list` shows instead.
+Make sure Ollama is running (for example, `ollama serve` if your installation is not already running it).
 
-## Configuration
+### Configuration
 
-All configuration is environment-driven (see `.env.example`), with localhost defaults so nothing is
-required for local development:
+Settings are loaded from the environment or `.env` (see [`.env.example`](.env.example)):
 
-| Variable                  | Default                                   | Purpose                                  |
-|----------------------------|-------------------------------------------|-------------------------------------------|
-| `TEMPORAL_ADDRESS`         | `localhost:7233`                          | Temporal server address, used by both the worker and CLI |
-| `TASK_QUEUE`               | `expense-task-queue`                      | Task queue shared by the worker and CLI — must match between them |
-| `OLLAMA_CHAT_URL`          | `http://localhost:11434/api/chat`         | Ollama chat endpoint used by every LLM-backed activity (multi-turn — the self-heal loop replays prior turns, not just an error string) |
-| `OLLAMA_MODEL`             | `llama3.2`                                | Model used for both receipt extraction and fraud-risk classification |
-| `UI_STREAM_URL`            | unset                                     | If set (e.g. `http://127.0.0.1:8000`), enables live token-by-token streaming into the web UI |
-| `HISTORY_LENGTH_THRESHOLD` | `20`                                      | Demo-scale orchestrator history-length threshold that triggers continue-as-new |
-| `CONTEXT_STORE_PATH`       | `context_store.jsonl`                     | Where continue-as-new snapshots are written (stand-in for a real external store) |
+| Setting | Python default | Purpose |
+| --- | --- | --- |
+| `TEMPORAL_ADDRESS` | `localhost:7233` | Temporal development server |
+| `TASK_QUEUE` | `expense-task-queue` | Shared task queue for workflow workers and clients |
+| `OLLAMA_CHAT_URL` | `http://localhost:11434/api/chat` | Local model chat endpoint |
+| `OLLAMA_MODEL` | `llama3.2` | Model for extraction and risk classification |
+| `UI_STREAM_URL` | unset | Optional FastAPI URL for live token deltas |
+| `HISTORY_LENGTH_THRESHOLD` | `20` | Illustrative event-history threshold for continuation |
+| `CONTEXT_STORE_PATH` | `context_store.jsonl` | JSONL context-snapshot destination |
 
-No secrets are required for this demo (Ollama and the Temporal dev server run unauthenticated locally),
-but the `.env` pattern is here so a real deployment can point at a remote Temporal Cloud address or a
-shared Ollama endpoint without touching code. `.env` is gitignored; only `.env.example` is committed.
+**Demo setting:** The committed `.env.example` deliberately sets `HISTORY_LENGTH_THRESHOLD=10`, whereas the Python fallback if unset is `20`. Copying the example will therefore make `continue_as_new` easier to observe in a local run.
 
-## Run the tests
+## Run the system
 
-```bash
-pytest -v
-```
+Use separate terminals from the repository root:
 
-Workflow tests use Temporal's time-skipping test environment with mocked extraction/risk activities,
-so they don't require Ollama or a running Temporal server.
-
-## Run it for real
-
-In one terminal, start the Temporal dev server:
+**Terminal 1 — Temporal**
 
 ```bash
 temporal server start-dev
 ```
 
-In another, start the worker:
+**Terminal 2 — worker**
 
 ```bash
+source .venv/bin/activate
 python -m expense_agent.worker
 ```
 
-In a third, drive it with the CLI. The `--workflow-id` you choose is the *orchestrator's* ID; the CLI
-automatically addresses the right child agent (`<id>-extraction` or `<id>-approval`) for you.
+**Terminal 3 — CLI**
 
 ```bash
-# A claim that should auto-approve (low risk, under threshold, allowed category)
-python -m expense_agent.cli submit --workflow-id wf-1 --amount 50 --category meals --receipt-text "Cafe receipt: $50.00, 2026-08-01"
-python -m expense_agent.cli status wf-1
+source .venv/bin/activate
 
-# A claim over the auto-approve threshold — pauses for manager approval
-python -m expense_agent.cli submit --workflow-id wf-2 --amount 500 --category travel --receipt-text "Flight: $500.00, 2026-08-01"
-python -m expense_agent.cli status wf-2   # should show pending_manager_approval
-python -m expense_agent.cli approve wf-2 --note "approved, business trip"
+# Typical small claim: may auto-approve if risk is low and policy passes
+python -m expense_agent.cli submit \
+  --workflow-id demo-1 --amount 50 --category meals \
+  --receipt-text 'Cafe receipt: $50.00, 2026-08-01'
+python -m expense_agent.cli status demo-1
 
-# A claim with unparseable receipt text — pauses for the employee to confirm the amount
-python -m expense_agent.cli submit --workflow-id wf-3 --amount 0 --category meals --receipt-text "asdkjqwe garbled receipt text"
-python -m expense_agent.cli status wf-3   # should show extracting, and stay there until confirmed
-python -m expense_agent.cli confirm-amount wf-3 42.00
+# Requires manager decision after policy/risk review
+python -m expense_agent.cli submit \
+  --workflow-id demo-2 --amount 500 --category travel \
+  --receipt-text 'Flight: $500.00, 2026-08-01'
+python -m expense_agent.cli status demo-2
+python -m expense_agent.cli approve demo-2 --note 'Business trip approved'
+
+# Example unreadable receipt, likely to require an employee correction
+python -m expense_agent.cli submit \
+  --workflow-id demo-3 --amount 0 --category meals \
+  --receipt-text 'unreadable receipt'
+python -m expense_agent.cli status demo-3
+python -m expense_agent.cli confirm-amount demo-3 42
 ```
 
-## Web UI
+Model-generated outcomes can vary. The examples illustrate workflow paths, rather than deterministic end-to-end acceptance criteria for a live model. Use distinct workflow IDs on subsequent runs.
 
-A small FastAPI app (`expense_agent/web.py`) gives you a browser-based alternative to the CLI: submit
-claims, watch each agent's live status and self-heal transcript (every attempt's raw model output and
-the error that triggered any retry), and approve/reject/confirm-amount — all in real time via
-Server-Sent Events.
+### Browser interface
+
+In another terminal, while Temporal and the worker are running:
 
 ```bash
-python -m uvicorn expense_agent.web:app --port 8000
+source .venv/bin/activate
+python -m uvicorn expense_agent.web:app --host 127.0.0.1 --port 8000
 ```
 
-Then open `http://localhost:8000`. The worker still needs to be running separately
-(`python -m expense_agent.worker`) — the web app is just another Temporal client, same as the CLI.
+Open <http://localhost:8000>. The UI supports submitting claims, inspecting workflow progress and model attempts, approving/rejecting, and correcting amounts. Updates are delivered using **Server-Sent Events (SSE)**.
 
-### Live token streaming
+To display model output as it streams, set `UI_STREAM_URL=http://127.0.0.1:8000` **before starting the worker**. Without this setting, results still arrive when each model activity finishes.
 
-Set `UI_STREAM_URL` (e.g. `http://127.0.0.1:8000`, matching wherever the web server is running) before
-starting the worker, and each agent's LLM output streams into the page token-by-token as it's generated,
-instead of appearing all at once when the attempt finishes. This is entirely optional — unset, the
-system behaves exactly as it does without it, since the worker and web server are otherwise independent
-processes.
+## Tests
 
-## Known limitation
+```bash
+source .venv/bin/activate
+pytest -v
+```
 
-The orchestrator derives its child workflow IDs deterministically from its own ID
-(`{workflow_id}-extraction`, `-policy`, `-approval`). This keeps the CLI simple (the human only ever
-types the orchestrator's ID), but means the orchestrator itself must not be retried/reset after a child
-has already started, since that would collide with the still-running child's ID. This is a fine
-trade-off for a demo; a production system would need a different ID strategy (e.g. including an attempt
-counter) to support orchestrator-level retry.
+The test suite covers parsing and corrective prompts, the Ollama client, CLI argument handling, API handlers, stream-buffer behaviour, heartbeat resume, Temporal workflow decisions, child workflow signals/updates and continue-as-new behaviour. Workflow tests use Temporal's time-skipping test environment and mocked model activities; a live Ollama model is not needed for those tests.
+
+The repository contains tests, but their current passing status is **not asserted here without executing them**.
+
+## Design boundaries
+
+- The demo uses deterministic child IDs derived from the orchestrator ID. Resetting or retrying an orchestrator after a child starts can cause child-ID collisions; production code needs a more robust strategy.
+- Model output is not a trusted source of compliance or fraud assessment. Financial approval rules and access control need separate production-grade validation.
+- The local Temporal development server and Ollama endpoint are not configured as production-authenticated public services.
+- `context_store.jsonl` is a demonstration of context snapshots, not a transactional database or a required recovery data source.
+
+For deeper explanations of the actual design choices and test findings, see **[`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md)**.
 
 ## License
 
