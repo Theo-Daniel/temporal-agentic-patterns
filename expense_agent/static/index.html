@@ -1,0 +1,832 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Self-Healing Expense Agent — Temporal + Ollama</title>
+<style>
+  :root {
+    /* core palette (carried over from the original UI) */
+    --bg: #0f1216;
+    --panel: #171b21;
+    --panel-2: #1e232b;
+    --border: #2a3038;
+    --text: #e6e9ee;
+    --muted: #8a93a1;
+    --accent: #5b8cff;
+    --ok: #3ecf8e;
+    --bad: #ff6b6b;
+    --warn: #ffb454;
+
+    /* additions for the landing sections */
+    --bg-hero: #11151b;
+    --accent-soft: rgba(91, 140, 255, 0.14);
+    --accent-line: rgba(91, 140, 255, 0.45);
+    --ok-soft: rgba(62, 207, 142, 0.14);
+    --radius: 10px;
+    --radius-lg: 14px;
+    --maxw: 1240px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 28px; }
+
+  /* ---------- hero ---------- */
+  .hero {
+    background:
+      radial-gradient(1100px 420px at 50% -140px, rgba(91,140,255,0.16), transparent 70%),
+      var(--bg-hero);
+    border-bottom: 1px solid var(--border);
+    padding: 64px 0 44px;
+    text-align: center;
+  }
+  .eyebrow {
+    display: inline-block;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: #9bb8ff;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-line);
+    border-radius: 100px;
+    padding: 5px 14px;
+    margin-bottom: 20px;
+  }
+  h1 {
+    font-size: 44px;
+    line-height: 1.12;
+    letter-spacing: -0.02em;
+    margin: 0 0 16px;
+    font-weight: 800;
+  }
+  .hero p.lede {
+    max-width: 720px;
+    margin: 0 auto;
+    font-size: 17px;
+    color: var(--muted);
+  }
+  .hero p.lede strong { color: var(--text); font-weight: 600; }
+
+  /* three-node pipeline indicator */
+  .pipeline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin: 34px auto 0;
+    flex-wrap: wrap;
+  }
+  .pnode {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 18px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    border-radius: 100px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    transition: color .25s, border-color .25s, background .25s, box-shadow .25s;
+  }
+  .pnode .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--border);
+    transition: background .25s, box-shadow .25s;
+  }
+  .pnode.active {
+    color: var(--text);
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 4px rgba(91,140,255,0.08);
+  }
+  .pnode.active .dot {
+    background: var(--accent);
+    box-shadow: 0 0 0 4px rgba(91,140,255,0.25);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .pnode.complete { color: var(--ok); border-color: rgba(62,207,142,0.4); background: var(--ok-soft); }
+  .pnode.complete .dot { background: var(--ok); }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 3px rgba(91,140,255,0.28); }
+    50%      { box-shadow: 0 0 0 7px rgba(91,140,255,0.06); }
+  }
+  .pline { width: 46px; height: 1px; background: var(--border); flex-shrink: 0; }
+
+  /* ---------- how it works strip ---------- */
+  .strip { padding: 52px 0 8px; }
+  .section-head { text-align: center; margin-bottom: 28px; }
+  .section-head h2 { margin: 0 0 6px; }
+  .section-head p { margin: 0; color: var(--muted); font-size: 14px; }
+  h2 {
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 700;
+    margin: 0 0 10px;
+  }
+  .how-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  .how-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 22px;
+  }
+  .how-card .tag {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #9bb8ff;
+    background: var(--accent-soft);
+    border-radius: 100px;
+    padding: 3px 10px;
+    margin-bottom: 12px;
+  }
+  .how-card h3 { margin: 0 0 8px; font-size: 16px; }
+  .how-card p { margin: 0; font-size: 13.5px; color: var(--muted); }
+  .how-card code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--text);
+  }
+
+  /* ---------- demo ---------- */
+  .demo { padding: 52px 0 64px; }
+  .demo-layout { display: flex; gap: 20px; align-items: flex-start; }
+  aside {
+    width: 320px;
+    flex-shrink: 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    position: sticky;
+    top: 20px;
+  }
+  main { flex: 1; min-width: 0; }
+  aside h3 { font-size: 15px; margin: 0 0 4px; }
+  aside .hint { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
+  input, textarea {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 8px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  input:focus, textarea:focus { outline: none; border-color: var(--accent-line); }
+  textarea { resize: vertical; min-height: 70px; }
+  button {
+    cursor: pointer;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .btn-primary { background: var(--accent); color: white; margin-top: 14px; width: 100%; padding: 10px; }
+  .btn-primary:hover { filter: brightness(1.08); }
+  .btn-approve { background: var(--ok); color: #063; }
+  .btn-reject { background: var(--bad); color: #400; }
+  .btn-confirm { background: var(--warn); color: #431; }
+  .claim-item {
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    margin-bottom: 4px;
+    color: var(--muted);
+    border: 1px solid transparent;
+    word-break: break-all;
+  }
+  .claim-item:hover { background: var(--panel-2); }
+  .claim-item.active { background: var(--panel-2); border-color: var(--accent); color: var(--text); }
+
+  /* run header (workflow id + orchestrator stage) */
+  .run-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    margin-bottom: 16px;
+  }
+  .run-head .wfid {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+  }
+  .run-head .wfid span { color: var(--muted); font-family: inherit; }
+
+  /* ---------- step tracker ---------- */
+  .tracker { display: flex; align-items: stretch; gap: 0; }
+  .track-line {
+    flex: 0 0 26px;
+    align-self: flex-start;
+    margin-top: 46px;
+    height: 2px;
+    background: var(--border);
+    transition: background .25s;
+  }
+  .track-line.lit { background: var(--accent-line); }
+  .track-line.done { background: rgba(62,207,142,0.45); }
+  .step {
+    flex: 1 1 0;
+    min-width: 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    transition: border-color .25s, box-shadow .25s;
+  }
+  .step.is-active { border-color: var(--accent-line); box-shadow: 0 0 0 3px rgba(91,140,255,0.08); }
+  .step.is-waiting { border-color: rgba(255,180,84,0.45); box-shadow: 0 0 0 3px rgba(255,180,84,0.07); }
+  .step.is-done { border-color: rgba(62,207,142,0.35); }
+  .step.is-idle { opacity: 0.6; }
+  .step-head { margin-bottom: 10px; }
+  .step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  .step.is-active .step-num { background: var(--accent-soft); border-color: var(--accent-line); color: #9bb8ff; }
+  .step.is-done .step-num { background: var(--ok-soft); border-color: rgba(62,207,142,0.4); color: var(--ok); }
+  .step-head h3 { display: inline; margin: 0; font-size: 14px; vertical-align: middle; }
+  .step-head .sub { display: block; font-size: 11px; color: var(--muted); margin: 6px 0 8px; }
+
+  .badge {
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: 100px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    display: inline-block;
+    white-space: nowrap;
+  }
+  .badge-idle { background: #2a3038; color: var(--muted); }
+  .badge-active { background: #2a3f66; color: #8fb4ff; }
+  .badge-waiting { background: #4a3a1a; color: var(--warn); }
+  .badge-done { background: #16382a; color: var(--ok); }
+  .badge-error { background: #4a1a1a; color: var(--bad); }
+
+  .kv { display: grid; grid-template-columns: minmax(72px, auto) 1fr; gap: 4px 10px; font-size: 12.5px; margin-bottom: 8px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; word-break: break-word; }
+  .kv dd.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+  .log-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    font-weight: 700;
+    margin: 10px 0 4px;
+  }
+  .attempt {
+    border-left: 3px solid var(--border);
+    padding: 7px 9px;
+    margin: 6px 0;
+    font-size: 11.5px;
+    background: var(--panel-2);
+    border-radius: 0 6px 6px 0;
+  }
+  .attempt.ok { border-left-color: var(--ok); }
+  .attempt.fail { border-left-color: var(--bad); }
+  .attempt pre {
+    margin: 4px 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+  }
+  .attempt .err { color: var(--bad); margin-top: 4px; }
+
+  /* live streaming token block */
+  .live {
+    margin: 6px 0 2px;
+    border: 1px dashed var(--accent-line);
+    background: rgba(91,140,255,0.06);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 190px;
+    overflow-y: auto;
+  }
+  .live-label { color: #9bb8ff; }
+  .cursor {
+    display: inline-block;
+    color: var(--accent);
+    animation: blink 1s steps(1, end) infinite;
+  }
+  @keyframes blink {
+    0%, 49%   { opacity: 1; }
+    50%, 100% { opacity: 0; }
+  }
+
+  .actions { display: flex; gap: 8px; margin-top: auto; padding-top: 12px; flex-wrap: wrap; }
+  .actions input { flex: 1 1 100%; }
+  .actions button { flex: 1 1 auto; }
+
+  .result-banner {
+    font-size: 14px;
+    font-weight: 700;
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    margin-bottom: 16px;
+    border: 1px solid transparent;
+  }
+  .result-approved { background: var(--ok-soft); color: var(--ok); border-color: rgba(62,207,142,0.4); }
+  .result-rejected { background: rgba(255,107,107,0.12); color: var(--bad); border-color: rgba(255,107,107,0.4); }
+  .result-banner .note { display: block; font-weight: 500; color: var(--muted); margin-top: 4px; font-size: 12.5px; }
+
+  .empty {
+    color: var(--muted);
+    font-size: 14px;
+    background: var(--panel);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-lg);
+    padding: 48px 24px;
+    text-align: center;
+  }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 24px 0;
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+  footer .wrap { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; }
+  footer a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  footer a:hover { text-decoration: underline; }
+
+  @media (max-width: 1040px) {
+    .tracker { flex-direction: column; }
+    .track-line { display: none; }
+    .step { margin-bottom: 14px; }
+    .actions { margin-top: 12px; }
+  }
+  @media (max-width: 900px) {
+    h1 { font-size: 32px; }
+    .how-grid { grid-template-columns: 1fr; }
+    .demo-layout { flex-direction: column; }
+    aside { width: 100%; position: static; }
+    .pline { width: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow">Temporal · Local LLM · Self-Healing</span>
+    <h1>Self-Healing AI Agents, Built on Temporal</h1>
+    <p class="lede">
+      A local model reads an expense receipt, and the workflow checks its work. When the output is wrong,
+      the <strong>exact failure is fed back to the model as context</strong> and it tries again — bounded to three
+      attempts, then escalated to a human. Watch every token, every retry, and every handoff live below.
+    </p>
+
+    <div class="pipeline" id="pipeline">
+      <div class="pnode" id="pnode-extract"><span class="dot"></span>Extract</div>
+      <div class="pline"></div>
+      <div class="pnode" id="pnode-check"><span class="dot"></span>Check</div>
+      <div class="pline"></div>
+      <div class="pnode" id="pnode-approve"><span class="dot"></span>Approve</div>
+    </div>
+  </div>
+</header>
+
+<section class="strip">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>How it works</h2>
+      <p>Three mechanisms do the real work — and they are ordered, not competing.</p>
+    </div>
+    <div class="how-grid">
+      <div class="how-card">
+        <span class="tag">Self-healing</span>
+        <h3>The model sees its own mistake</h3>
+        <p>
+          A retry here is not a blind retry. The workflow validates the model's output, then sends the bad
+          response <em>and</em> the specific validation error back as real conversation turns, so the next
+          attempt can see exactly what it got wrong. Bounded at three attempts — no infinite loops.
+        </p>
+      </div>
+      <div class="how-card">
+        <span class="tag">Update</span>
+        <h3>A correction that answers back</h3>
+        <p>
+          When extraction runs out of attempts, the employee supplies the real amount through a Temporal
+          <em>Update</em> — a synchronous, validated call. A bad value is rejected with the reason on the spot;
+          a good one returns <code>accepted</code> and the workflow carries on where it stopped.
+        </p>
+      </div>
+      <div class="how-card">
+        <span class="tag">Signal</span>
+        <h3>A human gate that costs nothing to wait on</h3>
+        <p>
+          Anything over policy — or classified as anything but low risk — parks on a Temporal <em>Signal</em>
+          and waits. The manager's approve or reject is fire-and-forget, and the workflow's state is durable
+          the whole time it waits, whether that's five seconds or five days.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="strip">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Built for what happens after launch</h2>
+      <p>Three more mechanisms — for the parts of running a workflow forever that a happy-path demo usually skips.</p>
+    </div>
+    <div class="how-grid">
+      <div class="how-card">
+        <span class="tag">Versioning</span>
+        <h3>Old workflows don't replay the new prompt</h3>
+        <p>
+          The extraction prompt changed mid-project — twice. <em>workflow.patched()</em> is called once, at the
+          top of the workflow, so a claim already in flight when the prompt changes keeps replaying against the
+          prompt it actually ran, while every new claim gets the current one — same code, same deploy, no
+          non-deterministic replay error.
+        </p>
+      </div>
+      <div class="how-card">
+        <span class="tag">Heartbeat</span>
+        <h3>A crash doesn't cost the tokens already spent</h3>
+        <p>
+          Risk classification heartbeats its generated text roughly once a second. If the worker dies
+          mid-generation, Temporal's retry reads the last heartbeat and prompts the model to continue from
+          there instead of starting over — a <em>prompted</em> continuation, not a true token-level resume,
+          and documented as exactly that rather than oversold.
+        </p>
+      </div>
+      <div class="how-card">
+        <span class="tag">Continue-As-New</span>
+        <h3>History that resets itself before it becomes a problem</h3>
+        <p>
+          The orchestrator watches its own event-history length after each stage. Past a threshold, it
+          snapshots its progress to an external store and calls <em>continue_as_new</em> — same workflow ID,
+          fresh history, invisible to anything watching from outside.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="demo">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Live demo</h2>
+      <p>Submit a claim and watch the agents work it in real time.</p>
+    </div>
+
+    <div class="demo-layout">
+      <aside>
+        <h3>Submit a claim</h3>
+        <p class="hint">Try a vague receipt to force the self-heal loop to run.</p>
+        <form id="submit-form">
+          <label for="workflow-id">Workflow ID</label>
+          <input id="workflow-id" required />
+
+          <label for="amount">Amount</label>
+          <input id="amount" type="number" step="0.01" required />
+
+          <label for="category">Category</label>
+          <input id="category" placeholder="meals / travel / office_supplies / software" required />
+
+          <label for="receipt-text">Receipt text</label>
+          <textarea id="receipt-text" required></textarea>
+
+          <button class="btn-primary" type="submit">Submit claim</button>
+        </form>
+
+        <h2 style="margin-top:24px">Claims this session</h2>
+        <div id="claim-list"></div>
+      </aside>
+
+      <main>
+        <div id="viewer" class="empty">Submit a claim, or pick one from the sidebar, to watch it live.</div>
+      </main>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>Temporal workflows · local Ollama model · server-sent events. No database — workflow state is the state.</span>
+    <a href="#" rel="noopener">View on GitHub</a>
+  </div>
+</footer>
+
+<script>
+const claimList = document.getElementById('claim-list');
+const viewer = document.getElementById('viewer');
+const claims = new Map(); // workflow_id -> EventSource
+let activeId = null;
+
+const MAX_EXTRACTION_ATTEMPTS = 3;
+const MAX_RISK_ATTEMPTS = 3;
+
+const pipelineNodes = [
+  document.getElementById('pnode-extract'),
+  document.getElementById('pnode-check'),
+  document.getElementById('pnode-approve'),
+];
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function badge(text, kind) {
+  return `<span class="badge badge-${kind}">${escapeHtml(text)}</span>`;
+}
+
+function stageBadge(stage) {
+  if (!stage) return badge('idle', 'idle');
+  if (stage === 'done') return badge('done', 'done');
+  if (stage === 'pending_manager_approval') return badge('waiting on manager', 'waiting');
+  if (stage === 'pending_amount_confirmation') return badge('needs your input', 'waiting');
+  return badge(stage.replace(/_/g, ' '), 'active');
+}
+
+// step shell class from a child-workflow status string
+function stepClass(status) {
+  if (!status) return 'is-idle';
+  if (status === 'done') return 'is-done';
+  if (status === 'pending_manager_approval' || status === 'pending_amount_confirmation') return 'is-waiting';
+  return 'is-active';
+}
+
+function fmtMoney(v) {
+  if (v === null || v === undefined || v === '') return '—';
+  const n = Number(v);
+  return Number.isFinite(n) ? '$' + n.toFixed(2) : escapeHtml(v);
+}
+
+function fmtBool(v) {
+  if (v === null || v === undefined) return '—';
+  return v ? 'pass' : 'fail';
+}
+
+function renderAttempts(log) {
+  if (!log || log.length === 0) return '';
+  return `<div class="log-label">Attempt transcript</div>` + log.map(a => `
+    <div class="attempt ${a.ok ? 'ok' : 'fail'}">
+      <strong>Attempt ${escapeHtml(a.attempt)}</strong> — ${a.ok ? 'succeeded' : 'failed'}
+      <pre>${escapeHtml(a.raw || '')}</pre>
+      ${a.error ? `<div class="err">Error: ${escapeHtml(a.error)}</div>` : ''}
+    </div>
+  `).join('');
+}
+
+// In-progress token stream with a blinking cursor. The blink phase is anchored to the
+// wall clock so that re-rendering the block on every SSE message doesn't restart the
+// animation and make the cursor look like it's flickering.
+function renderLive(text, label) {
+  if (!text) return '';
+  const delay = -(Date.now() % 1000);
+  return `<div class="log-label live-label">${escapeHtml(label)}</div>
+    <pre class="live">${escapeHtml(text)}<span class="cursor" style="animation-delay:${delay}ms">▍</span></pre>`;
+}
+
+function updatePipeline(stage) {
+  const order = ['extracting', 'checking_policy', 'pending_manager_approval'];
+  const idx = order.indexOf(stage);
+  pipelineNodes.forEach((node, i) => {
+    node.classList.remove('active', 'complete');
+    if (stage === 'done') {
+      node.classList.add('complete');
+    } else if (idx === -1) {
+      // no stage yet — leave every node neutral
+    } else if (i < idx) {
+      node.classList.add('complete');
+    } else if (i === idx) {
+      node.classList.add('active');
+    }
+  });
+}
+
+function render(workflowId, state) {
+  if (workflowId !== activeId) return;
+
+  viewer.classList.remove('empty');
+
+  const orchestratorStage = state.orchestrator && state.orchestrator.stage;
+  updatePipeline(state.done ? 'done' : orchestratorStage);
+
+  const e = state.extraction;
+  const p = state.policy;
+  const a = state.approval;
+
+  let html = '';
+
+  if (state.result) {
+    const cls = state.result.status === 'approved' ? 'result-approved' : 'result-rejected';
+    html += `<div class="result-banner ${cls}">
+      ${escapeHtml(String(state.result.status).toUpperCase())} — ${fmtMoney(state.result.amount)}
+      at ${escapeHtml(state.result.vendor || 'unknown vendor')} · risk ${escapeHtml(state.result.risk || '—')}
+      ${state.result.manager_note ? `<span class="note">Manager note: “${escapeHtml(state.result.manager_note)}”</span>` : ''}
+    </div>`;
+  }
+
+  html += `<div class="run-head">
+    <span class="wfid"><span>workflow</span> ${escapeHtml(workflowId)}</span>
+    ${stageBadge(state.done ? 'done' : orchestratorStage)}
+  </div>`;
+
+  // ---- step 1: extraction ----
+  const step1 = `<div class="step ${stepClass(e && e.status)}">
+    <div class="step-head">
+      <span class="step-num">1</span><h3>Extract</h3>
+      <span class="sub">Self-healing · reads the receipt with a local LLM</span>
+      ${stageBadge(e && e.status)}
+    </div>
+    ${e ? `
+      <div class="kv">
+        <dt>Attempts</dt><dd>${escapeHtml(e.extraction_attempts)} / ${MAX_EXTRACTION_ATTEMPTS}</dd>
+        <dt>Amount</dt><dd class="mono">${fmtMoney(e.extracted_amount)}</dd>
+        <dt>Vendor</dt><dd>${e.extracted_vendor ? escapeHtml(e.extracted_vendor) : '—'}</dd>
+      </div>
+      ${renderLive(state.extraction_live, 'Streaming now')}
+      ${renderAttempts(e.attempts_log)}
+      ${e.status === 'pending_amount_confirmation' ? `
+        <div class="actions">
+          <input id="confirm-amount-input" type="number" step="0.01" placeholder="Confirm the real amount" />
+          <button class="btn-confirm" onclick="confirmAmount(activeId)">Confirm via Update</button>
+        </div>
+      ` : ''}
+    ` : `<div class="kv"><dt>Status</dt><dd>not started</dd></div>`}
+  </div>`;
+
+  // ---- step 2: policy / risk ----
+  const step2 = `<div class="step ${stepClass(p && p.status)}">
+    <div class="step-head">
+      <span class="step-num">2</span><h3>Check</h3>
+      <span class="sub">Policy threshold + self-healing fraud-risk classification</span>
+      ${stageBadge(p && p.status)}
+    </div>
+    ${p ? `
+      <div class="kv">
+        <dt>Policy</dt><dd>${fmtBool(p.policy_pass)}</dd>
+        <dt>Risk</dt><dd>${p.risk ? escapeHtml(p.risk) : '—'}</dd>
+        <dt>Attempts</dt><dd>${escapeHtml(p.risk_attempts)} / ${MAX_RISK_ATTEMPTS}</dd>
+      </div>
+      ${renderLive(state.risk_live, 'Streaming now')}
+      ${renderAttempts(p.attempts_log)}
+    ` : `<div class="kv"><dt>Status</dt><dd>not started</dd></div>`}
+  </div>`;
+
+  // ---- step 3: approval ----
+  const step3 = `<div class="step ${stepClass(a && a.status)}">
+    <div class="step-head">
+      <span class="step-num">3</span><h3>Approve</h3>
+      <span class="sub">Human-in-the-loop · unblocked by a Temporal Signal</span>
+      ${a ? stageBadge(a.status) : badge('auto / not needed yet', 'idle')}
+    </div>
+    ${a ? `
+      <div class="kv">
+        <dt>Amount</dt><dd class="mono">${fmtMoney(a.amount)}</dd>
+        <dt>Category</dt><dd>${a.category ? escapeHtml(a.category) : '—'}</dd>
+        <dt>Vendor</dt><dd>${a.vendor ? escapeHtml(a.vendor) : '—'}</dd>
+        <dt>Policy</dt><dd>${fmtBool(a.policy_pass)}</dd>
+        <dt>Risk</dt><dd>${a.risk ? escapeHtml(a.risk) : '—'}</dd>
+        <dt>Receipt</dt><dd>${escapeHtml(a.receipt_text || '—')}</dd>
+      </div>
+      ${a.status === 'pending_manager_approval' ? `
+        <div class="actions">
+          <input id="note-input" placeholder="Note (optional)" />
+          <button class="btn-approve" onclick="decide(activeId, true)">Approve</button>
+          <button class="btn-reject" onclick="decide(activeId, false)">Reject</button>
+        </div>
+      ` : ''}
+    ` : `<div class="kv"><dt>Status</dt><dd>only starts if the claim can't auto-approve</dd></div>`}
+  </div>`;
+
+  const line1 = `<div class="track-line ${p ? 'done' : (e ? 'lit' : '')}"></div>`;
+  const line2 = `<div class="track-line ${a ? 'done' : (p ? 'lit' : '')}"></div>`;
+
+  html += `<div class="tracker">${step1}${line1}${step2}${line2}${step3}</div>`;
+
+  viewer.innerHTML = html;
+
+  // keep the streaming block pinned to the newest tokens
+  viewer.querySelectorAll('.live').forEach(el => { el.scrollTop = el.scrollHeight; });
+}
+
+function watch(workflowId) {
+  if (claims.has(workflowId)) claims.get(workflowId).close();
+  const es = new EventSource(`/claims/${workflowId}/stream`);
+  es.onmessage = (ev) => render(workflowId, JSON.parse(ev.data));
+  claims.set(workflowId, es);
+}
+
+function selectClaim(workflowId) {
+  activeId = workflowId;
+  document.querySelectorAll('.claim-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.id === workflowId);
+  });
+  updatePipeline(null);
+  viewer.classList.add('empty');
+  viewer.textContent = 'Connecting to ' + workflowId + '…';
+  watch(workflowId);
+}
+
+function addClaimToList(workflowId) {
+  const div = document.createElement('div');
+  div.className = 'claim-item';
+  div.dataset.id = workflowId;
+  div.textContent = workflowId;
+  div.onclick = () => selectClaim(workflowId);
+  claimList.prepend(div);
+  selectClaim(workflowId);
+}
+
+document.getElementById('submit-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const workflowId = document.getElementById('workflow-id').value;
+  const body = {
+    workflow_id: workflowId,
+    amount: parseFloat(document.getElementById('amount').value),
+    category: document.getElementById('category').value,
+    receipt_text: document.getElementById('receipt-text').value,
+  };
+  const resp = await fetch('/claims', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    alert('Failed to submit: ' + await resp.text());
+    return;
+  }
+  addClaimToList(workflowId);
+});
+
+async function decide(workflowId, approve) {
+  const note = document.getElementById('note-input').value;
+  await fetch(`/claims/${workflowId}/${approve ? 'approve' : 'reject'}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({note}),
+  });
+}
+
+async function confirmAmount(workflowId) {
+  const amount = parseFloat(document.getElementById('confirm-amount-input').value);
+  const resp = await fetch(`/claims/${workflowId}/confirm-amount`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({amount}),
+  });
+  if (!resp.ok) {
+    alert('Rejected: ' + (await resp.json()).detail);
+  }
+}
+</script>
+</body>
+</html>
